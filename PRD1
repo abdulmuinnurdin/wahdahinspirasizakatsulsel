@@ -1,0 +1,1059 @@
+# PRODUCT REQUIREMENTS DOCUMENT (PRD)
+# WahdahInspirasiZakat-Sulsel — HRIS & Organization Management
+
+**Dokumen:** Product Requirements Document  
+**Versi:** 1.0  
+**Status:** Draft berdasarkan keputusan arsitektur yang telah disepakati  
+**Backend:** Laravel  
+**Database:** Relational Database (MySQL/MariaDB sebagai target awal)  
+**API:** JSON:API  
+**Bahasa aplikasi:** Belum ditetapkan  
+**Target pengguna:** Administrator, pengelola organisasi, HR, dan Amil
+
+---
+
+# 1. Ringkasan Produk
+
+## 1.1 Latar Belakang
+
+WahdahInspirasiZakat-Sulsel membutuhkan fondasi sistem untuk mengelola data Amil, keanggotaan, struktur organisasi, jabatan atau amanah, status kepegawaian, hak akses, dan riwayat perubahan data.
+
+Sistem harus mampu mengelola organisasi yang memiliki struktur hierarkis:
+
+**Country → Province → City/Regency → Outlet**
+
+Satu Amil dapat menjalankan beberapa amanah pada unit organisasi yang berbeda secara bersamaan. Contohnya, seorang Amil dapat menjadi Ketua di tingkat Provinsi, Bendahara di tingkat Kota, dan Amil di suatu Outlet.
+
+Sistem juga harus memisahkan tiga konsep berikut:
+
+1. **Membership:** status keanggotaan Amil dalam organisasi.
+2. **Assignment/Amanah:** penempatan atau amanah yang sedang dan pernah dijalankan Amil.
+3. **Authorization:** hak melakukan tindakan dan cakupan data yang dapat diakses.
+
+Ketiganya tidak boleh digabung menjadi satu mekanisme.
+
+## 1.2 Tujuan Produk
+
+1. Menyediakan database terpusat untuk data Amil dan kepegawaian.
+2. Mengelola struktur organisasi secara hierarkis.
+3. Mengelola riwayat amanah dan penugasan Amil.
+4. Memungkinkan pengguna berpindah konteks amanah aktif.
+5. Memisahkan role, permission, dan access scope.
+6. Mencegah akses data lintas organisasi tanpa otorisasi.
+7. Menyediakan audit trail untuk perubahan data penting.
+8. Menyediakan fondasi yang dapat dikembangkan untuk modul operasional zakat.
+
+## 1.3 Di Luar Ruang Lingkup Versi Ini
+
+Hal berikut tidak termasuk implementasi inti PRD ini, kecuali diperlukan sebagai integrasi atau placeholder:
+
+- Proses penerimaan dan penyaluran zakat.
+- Perhitungan zakat.
+- Pengelolaan donatur dan mustahik.
+- Payroll dan penggajian.
+- Akuntansi dan laporan keuangan.
+- Sistem absensi dan presensi.
+- Recruitment dan applicant tracking.
+
+Fondasi HRIS harus memungkinkan modul-modul tersebut dikembangkan kemudian.
+
+---
+
+# 2. Prinsip Arsitektur dan Keputusan Bisnis
+
+Agent WAJIB mempertahankan prinsip berikut. Jangan mengubah keputusan ini tanpa persetujuan pemilik produk.
+
+| ID | Keputusan | Aturan |
+|---|---|---|
+| ARC-01 | Single institution | Sistem saat ini hanya mengelola satu institusi. Tidak perlu tabel institutions. |
+| ARC-02 | Organization hierarchy | Country → Province → City/Regency → Outlet. |
+| ARC-03 | User dan Amil | User dapat memiliki nol atau satu profil Amil. |
+| ARC-04 | Membership | Satu Amil hanya memiliki satu membership dalam institusi ini. |
+| ARC-05 | Assignment | Satu Amil dapat memiliki banyak assignment/amanah. |
+| ARC-06 | Primary assignment | Maksimal satu assignment aktif menjadi assignment utama per Amil. |
+| ARC-07 | Unit assignment | Satu Amil tidak boleh memiliki dua assignment aktif pada unit organisasi yang sama. |
+| ARC-08 | Assignment history | Assignment lama tidak dihapus ketika Amil pindah atau berganti amanah. |
+| ARC-09 | Context switching | User dapat memilih assignment aktif sebagai konteks kerja. |
+| ARC-10 | Authorization | Pergantian konteks tidak otomatis memberikan permission atau access scope. |
+| ARC-11 | RBAC | Role dan permission dipisahkan dari access scope. |
+| ARC-12 | Audit | Perubahan penting harus dicatat dalam audit_logs. |
+| ARC-13 | Historical integrity | Perubahan organisasi atau assignment tidak boleh mengubah kepemilikan transaksi historis. |
+| ARC-14 | Backend enforcement | Semua pemeriksaan akses dilakukan di backend, bukan hanya frontend. |
+
+---
+
+# 3. Pengelolaan User dan Profil Amil
+
+## 3.1 User Account
+
+User merupakan akun autentikasi aplikasi.
+
+Satu user dapat:
+
+- Tidak memiliki profil Amil, misalnya akun administrator teknis atau akun non-Amil.
+- Memiliki tepat satu profil Amil.
+
+Relasi:
+
+`users 1 — 0..1 amils`
+
+## 3.2 Amil Profile
+
+Profil Amil menyimpan identitas dan informasi dasar individu yang menjadi Amil.
+
+Minimal mencakup:
+
+- User pemilik profil.
+- Nomor atau kode Amil.
+- Nama lengkap.
+- Identitas personal yang dibutuhkan organisasi.
+- Kontak.
+- Tanggal mulai menjadi Amil.
+- Status profil.
+- Informasi tambahan sesuai kebutuhan HR.
+
+Ketentuan:
+
+1. Satu user tidak boleh memiliki lebih dari satu profil Amil.
+2. Satu profil Amil hanya dimiliki satu user.
+3. Setiap Amil yang menjadi anggota organisasi harus memiliki satu membership.
+4. Pembuatan profil Amil dan membership harus dilakukan secara konsisten, idealnya dalam satu database transaction.
+5. Akun non-Amil tidak wajib memiliki profil Amil.
+
+## 3.3 Membership
+
+Membership merepresentasikan hubungan keanggotaan Amil dengan institusi.
+
+Tabel utama: `organization_members`.
+
+Aturan:
+
+- Satu Amil maksimal memiliki satu membership.
+- Membership bukan penempatan organisasi.
+- Membership tidak menyimpan organization_unit_id sebagai penempatan amanah.
+- Membership tidak menyimpan position_id sebagai jabatan aktif.
+- Riwayat penempatan dan amanah disimpan pada tabel assignment.
+- Status membership harus dapat menunjukkan apakah keanggotaan masih aktif atau telah berakhir.
+
+Relasi:
+
+`amils 1 — 0..1 organization_members`
+
+Untuk Amil yang telah resmi menjadi anggota, proses bisnis harus memastikan membership tersedia.
+
+---
+
+# 4. Struktur Organisasi
+
+## 4.1 Hierarki
+
+Struktur organisasi:
+
+1. Country
+2. Province
+3. City/Regency
+4. Outlet
+
+Setiap unit memiliki parent kecuali root unit.
+
+## 4.2 Tabel
+
+Tabel yang direncanakan:
+
+- `countries`
+- `provinces`
+- `cities`
+- `outlets`
+- `organization_units`
+- `organization_unit_closure`
+
+## 4.3 Organization Units
+
+`organization_units` menjadi representasi utama struktur organisasi.
+
+Atribut minimal:
+
+- `id`
+- `parent_id`
+- `unit_type`
+- `code`
+- `name`
+- `is_active`
+- timestamps
+
+`unit_type` hanya boleh berisi:
+
+- `country`
+- `province`
+- `city`
+- `outlet`
+
+## 4.4 Hierarchy Closure
+
+`organization_unit_closure` menyimpan relasi ancestor dan descendant.
+
+Ketentuan:
+
+- Setiap unit memiliki relasi terhadap dirinya sendiri dengan depth 0.
+- Relasi parent-child harus konsisten dengan unit_type.
+- Perubahan parent harus memperbarui closure table secara konsisten.
+- Tidak boleh terjadi circular hierarchy.
+- Unit yang memiliki child tidak boleh dihapus secara sembarangan.
+
+## 4.5 Acceptance Criteria
+
+- Admin dapat membuat, membaca, memperbarui, dan menonaktifkan unit organisasi sesuai permission.
+- Unit tidak dapat dipindahkan ke parent yang menyebabkan circular hierarchy.
+- Province harus berada di bawah Country.
+- City harus berada di bawah Province.
+- Outlet harus berada di bawah City.
+- Query descendant dan ancestor harus menghasilkan struktur yang benar.
+
+---
+
+# 5. Position dan Assignment/Amanah
+
+## 5.1 Position
+
+`positions` adalah master data jabatan atau jenis amanah.
+
+Contoh:
+
+- Ketua
+- Wakil Ketua
+- Sekretaris
+- Bendahara
+- Amil
+- Koordinator
+
+Position merupakan definisi jabatan, bukan penempatan seseorang.
+
+## 5.2 Assignment
+
+`amil_assignments` mencatat penempatan dan amanah yang dijalankan seorang Amil pada unit organisasi tertentu.
+
+Informasi minimal:
+
+- `organization_member_id`
+- `organization_unit_id`
+- `position_id`
+- `amil_employment_id` jika terkait dengan periode kepegawaian
+- `is_primary`
+- `status`
+- `starts_at`
+- `ends_at`
+- `notes`
+- timestamps
+
+## 5.3 Aturan Assignment
+
+1. Satu Amil dapat mempunyai beberapa assignment aktif.
+2. Assignment dapat berada di tingkat organisasi berbeda.
+3. Maksimal satu assignment aktif per Amil pada satu organization unit.
+4. Maksimal satu assignment aktif menjadi primary assignment untuk setiap Amil.
+5. Primary assignment dipilih dari seluruh assignment aktif, bukan satu per level.
+6. Assignment yang berakhir harus tetap disimpan sebagai histori.
+7. Pergantian posisi pada unit yang sama dilakukan dengan mengakhiri assignment lama dan membuat assignment baru.
+8. Perpindahan unit dilakukan dengan mengakhiri assignment lama dan membuat assignment baru.
+9. Assignment tidak boleh dihapus hanya karena masa amanah telah berakhir.
+10. Tanggal akhir tidak boleh lebih awal daripada tanggal mulai.
+
+Contoh:
+
+| Amil | Unit | Position | Status |
+|---|---|---|---|
+| Amil A | Provinsi Sulawesi Selatan | Ketua | Active, Primary |
+| Amil A | Kota A | Bendahara | Active |
+| Amil A | Outlet B | Amil | Active |
+
+Ketiga assignment dapat aktif bersamaan, tetapi hanya satu yang menjadi primary.
+
+## 5.4 Context Switching
+
+User dapat memilih assignment aktif untuk menjadi konteks kerja.
+
+`users.last_active_assignment_id` menyimpan assignment terakhir yang dipilih.
+
+Aturan:
+
+- Nilai tersebut harus merujuk pada assignment milik Amil yang terhubung dengan user.
+- Assignment harus masih aktif ketika dipilih.
+- Nilai disimpan agar pilihan bertahan setelah logout dan login kembali.
+- Saat login, backend memvalidasi kepemilikan dan status assignment.
+- Jika masih valid, gunakan assignment tersebut.
+- Jika tidak valid, gunakan primary assignment aktif.
+- Jika tidak ada primary assignment, user harus memilih salah satu assignment aktif.
+- Jika tidak ada assignment aktif, sistem menampilkan kondisi bahwa user belum memiliki amanah aktif.
+- Pemilihan assignment tidak mengubah role, permission, maupun access scope user.
+
+## 5.5 Acceptance Criteria
+
+- Amil dapat mempunyai beberapa assignment aktif pada unit berbeda.
+- Sistem menolak dua assignment aktif untuk Amil yang sama pada unit yang sama.
+- Sistem menolak dua primary assignment aktif untuk Amil yang sama.
+- Assignment yang sudah berakhir tidak dapat dipilih sebagai konteks.
+- User tidak dapat memilih assignment milik user lain.
+- Assignment lama tetap dapat dilihat oleh pengguna yang memiliki permission terkait histori.
+
+---
+
+# 6. Employment / Kepegawaian
+
+Employment merepresentasikan hubungan kerja atau status kepegawaian Amil, terpisah dari membership dan assignment.
+
+Tabel yang direncanakan:
+
+- `amil_employments`
+- Tabel riwayat perubahan employment sesuai rancangan database.
+- Tabel master employment type/status jika dibutuhkan.
+
+Informasi dapat mencakup:
+
+- Jenis hubungan kerja.
+- Status kepegawaian.
+- Tanggal mulai.
+- Tanggal berakhir.
+- Nomor dokumen atau kontrak.
+- Keterangan.
+
+Ketentuan:
+
+1. Employment bukan pengganti membership.
+2. Employment bukan pengganti assignment.
+3. Satu Amil dapat memiliki histori employment.
+4. Assignment dapat dikaitkan dengan employment yang relevan.
+5. Perubahan status employment tidak boleh menghapus histori assignment.
+6. Aturan apakah satu Amil dapat mempunyai lebih dari satu employment aktif harus mengikuti constraint dan keputusan bisnis yang dikonfirmasi, bukan diasumsikan oleh Agent.
+
+---
+
+# 7. Data Personal dan Dokumen Amil
+
+Sistem menyediakan pengelolaan data pendukung Amil sesuai rancangan tabel:
+
+- `amil_addresses`
+- `amil_families`
+- `education_levels`
+- `amil_educations`
+- `amil_certifications`
+- `amil_trainings`
+- `documents`
+- `amil_documents`
+
+Fitur minimal:
+
+- Melihat dan memperbarui data personal sesuai permission.
+- Menyimpan alamat dan informasi keluarga.
+- Mencatat riwayat pendidikan.
+- Mencatat sertifikasi dan pelatihan.
+- Mengunggah dan mengelola dokumen.
+- Mengakses dokumen berdasarkan permission dan kepemilikan.
+
+Ketentuan keamanan:
+
+- Validasi tipe file, ukuran, dan akses dokumen.
+- File tidak boleh dapat diakses publik tanpa otorisasi.
+- Jangan menyimpan file sensitif pada lokasi public yang dapat ditebak.
+- Audit perubahan informasi penting.
+- Jangan menyimpan data yang tidak diperlukan.
+
+---
+
+# 8. Authorization: Role, Permission, dan Access Scope
+
+## 8.1 Konsep
+
+Sistem wajib memisahkan:
+
+**Role / Permission:** tindakan yang boleh dilakukan user.
+
+**Access Scope:** data organisasi yang boleh dilihat atau dikelola user.
+
+**Active Assignment:** konteks amanah yang sedang dipilih user.
+
+Ketiganya harus dievaluasi secara terpisah.
+
+## 8.2 RBAC
+
+Tabel:
+
+- `roles`
+- `permissions`
+- `role_permissions`
+- `user_roles`
+
+Permission menggunakan format konsisten, misalnya:
+
+- `amil.view`
+- `amil.create`
+- `amil.update`
+- `amil.delete`
+- `amil.assignment.view`
+- `amil.assignment.manage`
+- `organization.view`
+- `organization.manage`
+- `audit_logs.view`
+- `audit_logs.export`
+
+Daftar di atas adalah contoh awal. Agent harus membuat permission catalog yang konsisten dan tidak menganggap daftar tersebut sebagai daftar final seluruh modul.
+
+Role dapat diberikan:
+
+- Secara global, jika `organization_unit_id` NULL.
+- Pada unit organisasi tertentu, jika role dibatasi ke unit tersebut.
+
+## 8.3 Access Scope
+
+Tabel:
+
+- `access_levels`
+- `user_accesses`
+
+Level akses:
+
+| Code | Nama | Cakupan |
+|---|---|---|
+| ALL | All Access | Seluruh organisasi |
+| COUNTRY | Country Access | Satu negara dan turunannya |
+| PROVINCE | Province Access | Satu provinsi dan turunannya |
+| LOCAL | City / Outlet Access | Kota atau outlet yang ditentukan |
+
+Aturan:
+
+1. User dapat mempunyai beberapa access scope.
+2. Scope digabungkan menggunakan union.
+3. ALL mencakup seluruh organisasi sehingga scope lain tidak menambah cakupan.
+4. ALL tidak memerlukan organization_unit_id.
+5. COUNTRY harus menunjuk unit country.
+6. PROVINCE harus menunjuk unit province.
+7. LOCAL dapat menunjuk unit city atau outlet.
+8. Validasi dilakukan di backend.
+9. Scope yang belum mulai atau sudah kedaluwarsa tidak berlaku.
+10. Scope yang dinonaktifkan tidak berlaku.
+
+## 8.4 Authorization Evaluation
+
+Setiap operasi yang dilindungi harus melewati dua pemeriksaan:
+
+1. Apakah user memiliki permission untuk melakukan tindakan?
+2. Apakah data target berada dalam access scope yang dimiliki user?
+
+Secara konseptual:
+
+`Authorized = Permission Granted AND Resource Within Access Scope`
+
+Active assignment tidak boleh digunakan sebagai pengganti kedua pemeriksaan tersebut.
+
+## 8.5 Security Requirements
+
+- Jangan mempercayai organization_unit_id dari frontend.
+- Backend harus memvalidasi unit organisasi pada setiap request.
+- Jangan menggunakan ID assignment yang dikirim frontend tanpa validasi kepemilikan.
+- Hindari insecure direct object reference (IDOR).
+- Query data harus dibatasi dengan scope yang sudah tervalidasi.
+- Jangan hanya menyembunyikan tombol di frontend sebagai mekanisme keamanan.
+- Pengujian harus mencakup akses lintas unit, lintas provinsi, dan akses tanpa permission.
+
+---
+
+# 9. Audit Trail
+
+## 9.1 Tujuan
+
+Semua perubahan penting harus dapat ditelusuri:
+
+- Siapa yang melakukan perubahan?
+- Data siapa atau data apa yang diubah?
+- Kapan perubahan dilakukan?
+- Dalam konteks organisasi mana?
+- Apa nilai sebelum dan sesudah perubahan?
+- Apa alasan perubahan?
+
+## 9.2 Struktur
+
+Tabel utama: `audit_logs`.
+
+Kolom yang direncanakan:
+
+- `id`
+- `actor_id`
+- `actor_name`
+- `subject_user_id`
+- `subject_user_name`
+- `organization_unit_id`
+- `event`
+- `auditable_type`
+- `auditable_id`
+- `old_values`
+- `new_values`
+- `reason`
+- `ip_address`
+- `user_agent`
+- `request_id`
+- `created_at`
+
+`actor_name` dan `subject_user_name` merupakan snapshot agar identitas historis tetap dapat dibaca ketika data user berubah atau akun tidak lagi tersedia.
+
+## 9.3 Aturan Audit
+
+1. Audit log bersifat append-only.
+2. Administrator biasa tidak boleh mengubah atau menghapus audit log.
+3. Perubahan data dan pencatatan audit dilakukan dalam satu database transaction.
+4. Jika perubahan utama gagal, pencatatan audit ikut dibatalkan.
+5. Jangan mencatat password, token, secret, atau kredensial.
+6. Perubahan melalui API juga harus diaudit.
+7. Akses audit trail dibatasi permission khusus.
+8. Audit harus mencatat perubahan yang relevan, bukan hanya aktivitas frontend.
+
+Event awal:
+
+- `amil.created`
+- `amil.updated`
+- `amil.membership.created`
+- `amil.membership.updated`
+- `amil.assignment.created`
+- `amil.assignment.updated`
+- `amil.assignment.ended`
+- `amil.assignment.primary_changed`
+- `user.access.created`
+- `user.access.updated`
+- `user.access.revoked`
+- `user.role.created`
+- `user.role.updated`
+- `employment.created`
+- `employment.updated`
+- `organization.created`
+- `organization.updated`
+
+## 9.4 Audit Trail UI
+
+Menu:
+
+**Administration → Audit Trail**
+
+Fitur:
+
+- Filter pelaku.
+- Filter subjek.
+- Filter modul.
+- Filter event.
+- Filter organisasi.
+- Filter rentang tanggal.
+- Pencarian berdasarkan nama atau ID.
+- Detail nilai sebelum dan sesudah.
+- Alasan perubahan.
+- Export sesuai permission.
+
+---
+
+# 10. Modul dan Fitur Aplikasi
+
+## 10.1 Dashboard
+
+Menampilkan informasi sesuai permission dan access scope user, misalnya:
+
+- Jumlah Amil.
+- Jumlah Amil aktif.
+- Ringkasan struktur organisasi.
+- Jumlah assignment aktif.
+- Ringkasan employment.
+- Aktivitas terbaru yang boleh diakses.
+
+Dashboard tidak boleh menampilkan agregasi dari unit yang tidak berada dalam access scope user.
+
+## 10.2 Organization Management
+
+Fitur:
+
+- Daftar struktur organisasi.
+- Tampilan hierarki.
+- Tambah unit.
+- Edit unit.
+- Aktif/nonaktif unit.
+- Detail unit.
+- Daftar Amil dan assignment dalam unit.
+- Validasi parent-child.
+
+## 10.3 Amil Management
+
+Fitur:
+
+- Daftar Amil.
+- Detail profil Amil.
+- Pembuatan profil Amil.
+- Pengubahan data personal.
+- Membership.
+- Riwayat assignment.
+- Riwayat employment.
+- Pendidikan, sertifikasi, pelatihan.
+- Dokumen Amil.
+
+## 10.4 Assignment Management
+
+Fitur:
+
+- Membuat amanah baru.
+- Mengubah status amanah.
+- Mengakhiri amanah.
+- Menentukan primary assignment.
+- Melihat riwayat amanah.
+- Melihat assignment aktif per unit.
+- Validasi benturan assignment.
+
+## 10.5 User Access Management
+
+Fitur:
+
+- Memberikan role.
+- Mencabut role.
+- Memberikan access scope.
+- Memperbarui access scope.
+- Menonaktifkan atau mencabut access scope.
+- Mengatur masa berlaku scope.
+- Melihat histori perubahan akses.
+
+## 10.6 Active Assignment Selector
+
+Fitur:
+
+- Menampilkan assignment aktif milik user.
+- Memilih assignment sebagai konteks aktif.
+- Menampilkan nama unit dan position yang sedang aktif.
+- Menyimpan pilihan terakhir.
+- Memvalidasi assignment setiap kali konteks digunakan.
+- Menangani kondisi tidak mempunyai assignment aktif.
+
+---
+
+# 11. API Requirements
+
+API menggunakan JSON:API sebagai referensi format.
+
+Base path yang direncanakan:
+
+`/api/v1`
+
+Endpoint awal:
+
+## User dan Amil
+
+- `GET /api/v1/users`
+- `GET /api/v1/users/{id}`
+- `GET /api/v1/amils`
+- `POST /api/v1/amils`
+- `GET /api/v1/amils/{id}`
+- `PATCH /api/v1/amils/{id}`
+
+## Organization
+
+- `GET /api/v1/organizations`
+- `POST /api/v1/organizations`
+- `GET /api/v1/organizations/{id}`
+- `PATCH /api/v1/organizations/{id}`
+
+## Assignment
+
+- `GET /api/v1/amils/{id}/assignments`
+- `POST /api/v1/amils/{id}/assignments`
+- `PATCH /api/v1/assignments/{id}`
+- `POST /api/v1/assignments/{id}/end`
+- `POST /api/v1/assignments/{id}/set-primary`
+
+## Active Context
+
+- `GET /api/v1/me/assignments`
+- `GET /api/v1/me/active-assignment`
+- `PATCH /api/v1/me/active-assignment`
+
+## Access dan Role
+
+- `GET /api/v1/users/{id}/accesses`
+- `POST /api/v1/users/{id}/accesses`
+- `PATCH /api/v1/user-accesses/{id}`
+- `GET /api/v1/users/{id}/roles`
+- `POST /api/v1/users/{id}/roles`
+
+## Audit
+
+- `GET /api/v1/audit-logs`
+- `GET /api/v1/audit-logs/{id}`
+- `GET /api/v1/users/{id}/audit-logs`
+- `GET /api/v1/users/{id}/access-history`
+- `GET /api/v1/organizations/{id}/audit-logs`
+
+Catatan:
+
+- Daftar endpoint merupakan rancangan awal.
+- Agent harus mengikuti JSON:API untuk format resource, relationships, errors, pagination, dan filtering yang relevan.
+- Endpoint harus memiliki autentikasi dan authorization.
+- Jangan mengembalikan data sensitif yang tidak diperlukan.
+- Semua endpoint list harus menerapkan access scope.
+- Endpoint mutasi harus mencatat audit sesuai aturan.
+
+---
+
+# 12. Non-Functional Requirements
+
+## 12.1 Security
+
+- Semua endpoint privat membutuhkan autentikasi.
+- Authorization diterapkan pada backend.
+- Proteksi IDOR.
+- Validasi input menggunakan Form Request atau mekanisme setara.
+- File privat harus dilindungi.
+- Audit log tidak boleh dapat dimanipulasi pengguna biasa.
+- Hindari kebocoran data personal melalui response dan log.
+
+## 12.2 Data Integrity
+
+- Foreign key digunakan untuk relasi yang sesuai.
+- Unique constraint diterapkan untuk aturan bisnis yang dapat dijaga di database.
+- Perubahan multi-tabel dilakukan dalam transaction.
+- Histori assignment tidak dihapus.
+- Konsistensi closure table dijaga.
+- Constraint database dilengkapi validasi service layer.
+
+## 12.3 Performance
+
+- Gunakan eager loading untuk menghindari N+1.
+- Index kolom foreign key dan kolom pencarian.
+- Gunakan pagination untuk daftar data.
+- Query access scope harus efisien dan dapat diuji.
+- Evaluasi penggunaan closure table untuk query hierarki.
+- Hindari memuat seluruh organisasi ke memori pada setiap request.
+
+## 12.4 Maintainability
+
+- Pisahkan Controller, Service/Action, Model, Policy, Request, dan Resource.
+- Business rules tidak ditempatkan seluruhnya di Controller.
+- Gunakan transaction untuk operasi lintas tabel.
+- Gunakan enum atau konstanta terpusat untuk status dan jenis unit bila sesuai.
+- Hindari duplikasi aturan authorization.
+- Sediakan automated test untuk aturan bisnis penting.
+
+---
+
+# 13. Acceptance Criteria Global
+
+Implementasi dianggap memenuhi PRD jika:
+
+1. User dapat mempunyai nol atau satu profil Amil.
+2. Amil dapat mempunyai satu membership.
+3. Amil dapat mempunyai beberapa assignment aktif di unit berbeda.
+4. Satu Amil tidak dapat mempunyai dua assignment aktif pada unit yang sama.
+5. Satu Amil hanya dapat mempunyai satu primary assignment aktif.
+6. Assignment yang berakhir tetap tersimpan sebagai histori.
+7. User hanya dapat memilih assignment aktif miliknya sendiri.
+8. Pilihan assignment terakhir bertahan setelah logout dan login.
+9. Assignment context tidak otomatis mengubah permission atau access scope.
+10. Role dan permission dapat dikelola secara terpisah dari access scope.
+11. Access scope dapat digabungkan.
+12. Semua request data organisasi menerapkan scope.
+13. Semua perubahan penting menghasilkan audit log.
+14. Audit log tidak dapat diubah oleh administrator biasa.
+15. Perubahan organisasi tidak mengubah transaksi historis.
+16. API menggunakan format JSON:API sesuai rancangan.
+17. Automated tests mencakup skenario sukses dan penolakan akses.
+18. Database migration dapat dijalankan dari database kosong.
+19. Seluruh foreign key, unique constraint, dan index dapat diverifikasi.
+20. Tidak ada fitur keamanan yang hanya diterapkan pada frontend.
+
+---
+
+# 14. Test Scenarios Wajib
+
+Agent WAJIB menulis automated tests untuk skenario berikut.
+
+## User dan Amil
+
+- User tanpa profil Amil dapat tetap menjadi user aplikasi.
+- User tidak dapat memiliki dua profil Amil.
+- Pembuatan Amil dan membership gagal secara atomik jika salah satunya gagal.
+- Membership tidak dapat digandakan untuk Amil yang sama.
+
+## Assignment
+
+- Amil dapat mempunyai assignment pada Provinsi dan Outlet secara bersamaan.
+- Amil dapat mempunyai assignment pada Provinsi, Kota, dan Outlet sekaligus.
+- Amil tidak dapat mempunyai dua assignment aktif pada unit yang sama.
+- Amil tidak dapat mempunyai dua primary assignment aktif.
+- Assignment lama tetap tersedia setelah assignment baru dibuat.
+- Assignment yang telah berakhir tidak dapat dipilih sebagai active context.
+
+## Context Switching
+
+- User hanya dapat memilih assignment miliknya sendiri.
+- User tidak dapat memilih assignment Amil lain.
+- Assignment yang tidak aktif ditolak.
+- Assignment terakhir digunakan kembali setelah login jika masih valid.
+- Jika assignment terakhir tidak valid, sistem menggunakan primary assignment aktif.
+- Jika tidak ada primary assignment, sistem meminta pemilihan assignment.
+- Jika tidak ada assignment aktif, sistem menangani kondisi tanpa konteks amanah.
+
+## Access Scope dan RBAC
+
+- User dengan permission tetapi tanpa scope tidak dapat mengakses data organisasi.
+- User dengan scope tetapi tanpa permission tidak dapat melakukan tindakan.
+- User dengan scope Province dapat mengakses data turunannya sesuai aturan.
+- User dengan scope Outlet tidak dapat mengakses Outlet lain.
+- Scope ALL mencakup seluruh organisasi.
+- Scope kedaluwarsa tidak memberikan akses.
+- User tidak dapat mengubah organization_unit_id request untuk melewati scope.
+- User tidak dapat mengakses resource dengan menebak ID.
+
+## Audit
+
+- Perubahan data menghasilkan old_values dan new_values.
+- Identitas actor tersimpan.
+- Identitas subject tersimpan jika relevan.
+- Kegagalan perubahan utama membatalkan audit pada transaction yang sama.
+- Password dan token tidak pernah disimpan dalam audit.
+- Administrator biasa tidak dapat menghapus audit log.
+
+---
+
+# 15. Rencana Implementasi untuk AI Coding Agent
+
+Agent harus mengerjakan fitur secara bertahap. Jangan langsung membuat seluruh fitur dalam satu perubahan besar.
+
+## Phase 0 — Repository Discovery
+
+Sebelum menulis kode:
+
+1. Periksa struktur repository.
+2. Periksa versi Laravel dan PHP.
+3. Periksa database driver dan versi database target.
+4. Periksa sistem autentikasi.
+5. Periksa package role/permission yang sudah digunakan.
+6. Periksa pola API dan response yang sudah ada.
+7. Periksa model User dan tabel users yang sudah tersedia.
+8. Periksa migration yang sudah ada.
+9. Periksa standar coding dan testing repository.
+
+**Output:** ringkasan kondisi repository, potensi konflik, dan rencana implementasi.
+
+Jangan mengubah struktur aplikasi yang sudah ada tanpa alasan yang jelas.
+
+## Phase 1 — Database Foundation
+
+Implementasikan:
+
+- Geography.
+- Organization units.
+- Organization unit closure.
+- Positions.
+- Amils.
+- Organization members.
+- Assignments.
+- Employment.
+- Data personal.
+- Access scope.
+- RBAC.
+- Documents.
+- Audit logs.
+- Last active assignment.
+
+Syarat:
+
+- Periksa urutan migration dan foreign key.
+- Periksa circular dependency.
+- Periksa dukungan generated column dan unique index pada versi database target.
+- Jangan menganggap migration berhasil hanya karena lolos PHP syntax lint.
+- Jalankan migration pada database pengujian.
+- Sediakan rollback yang aman.
+- Jangan mengubah atau menghapus data production.
+
+**Output:** migration, model, relationship, factory, dan seeder dasar.
+
+## Phase 2 — Organization Management
+
+Implementasikan:
+
+- CRUD organization unit.
+- Validasi parent-child.
+- Closure table maintenance.
+- Query ancestor dan descendant.
+- Unit activation/deactivation.
+
+**Output:** service, request validation, policy, API, dan tests.
+
+## Phase 3 — Amil and Membership
+
+Implementasikan:
+
+- User-Amil relationship.
+- Amil profile CRUD.
+- Membership lifecycle.
+- Personal data.
+- Education, certification, training, dan documents.
+
+**Output:** API, service, validation, authorization, dan tests.
+
+## Phase 4 — Assignment Management
+
+Implementasikan:
+
+- Create assignment.
+- End assignment.
+- Change position melalui histori assignment.
+- Set primary assignment.
+- Assignment history.
+- Unique active assignment per unit.
+- Unique active primary assignment.
+
+**Output:** service, API, policy, dan tests untuk seluruh business rules.
+
+## Phase 5 — Active Assignment Context
+
+Implementasikan:
+
+- List assignment aktif milik user.
+- Get active assignment.
+- Switch active assignment.
+- Persist last active assignment.
+- Login validation dan fallback.
+- No active assignment handling.
+
+**Output:** API, middleware/context resolver bila diperlukan, dan tests.
+
+## Phase 6 — Authorization
+
+Implementasikan:
+
+- Role management.
+- Permission catalog.
+- User role assignment.
+- Access scope management.
+- Scope resolver.
+- Organization query scoping.
+- Policy atau middleware terpusat.
+
+**Output:** authorization layer yang konsisten dan automated tests untuk akses lintas organisasi.
+
+## Phase 7 — Audit Trail
+
+Implementasikan:
+
+- Audit service.
+- Audit event catalog.
+- Old/new snapshots.
+- Actor dan subject snapshots.
+- Request ID.
+- IP dan user agent.
+- Audit transaction integration.
+- Audit list/detail API.
+
+**Output:** audit logging dan tests.
+
+## Phase 8 — Frontend
+
+Implementasikan UI:
+
+- Dashboard.
+- Organization management.
+- Amil management.
+- Assignment management.
+- Active assignment selector.
+- User access management.
+- Audit trail.
+
+Frontend hanya menampilkan dan mempermudah interaksi. Seluruh otorisasi tetap berada di backend.
+
+## Phase 9 — Integration and Quality Assurance
+
+Lakukan:
+
+- Migration fresh test.
+- Migration rollback test.
+- Feature test.
+- Authorization test.
+- API contract test.
+- Regression test.
+- Static analysis.
+- Code style check.
+- Review query performance.
+- Security review.
+
+**Output:** laporan hasil pengujian, daftar temuan, dan status kesiapan deployment.
+
+---
+
+# 16. Aturan Kerja untuk AI Coding Agent
+
+Instruksi berikut wajib diikuti Agent.
+
+1. Jadikan PRD ini sebagai sumber kebutuhan bisnis.
+2. Jangan mengubah keputusan arsitektur yang telah ditetapkan.
+3. Jika menemukan konflik dengan kode existing, jelaskan konflik dan dampaknya sebelum mengubah desain.
+4. Jangan mengarang kebutuhan bisnis yang belum ditentukan.
+5. Tandai hal yang belum diputuskan sebagai `OPEN QUESTION`.
+6. Periksa database target sebelum menggunakan fitur khusus MySQL/MariaDB.
+7. Jangan menganggap syntax migration yang valid berarti migration berhasil.
+8. Jangan melakukan destructive migration pada data existing tanpa persetujuan.
+9. Gunakan database transaction untuk perubahan yang melibatkan beberapa tabel.
+10. Jangan menempatkan seluruh business logic di Controller.
+11. Jangan mempercayai data organisasi dari frontend.
+12. Jangan menyamakan active assignment dengan authorization.
+13. Jangan menghapus histori assignment.
+14. Jangan menghapus audit log.
+15. Setiap fitur harus disertai automated tests.
+16. Jangan mengimplementasikan fitur yang belum memiliki keputusan bisnis jika implementasi tersebut berisiko mengubah data atau hak akses.
+17. Setelah setiap phase, berikan ringkasan file yang dibuat/diubah, keputusan teknis, hasil test, dan pekerjaan tersisa.
+
+## Format laporan setiap Phase
+
+Agent harus memberikan:
+
+- **Implemented:** fitur yang selesai.
+- **Files Created:** file baru.
+- **Files Modified:** file yang diubah.
+- **Database Changes:** migration dan perubahan skema.
+- **Business Rules:** aturan yang diterapkan.
+- **Tests:** test yang dibuat dan hasil eksekusi.
+- **Security:** pemeriksaan keamanan yang dilakukan.
+- **Open Questions:** keputusan yang masih diperlukan.
+- **Next Phase:** pekerjaan berikutnya.
+
+---
+
+# 17. Open Questions — Perlu Konfirmasi Pemilik Produk
+
+Agent tidak boleh menganggap hal berikut sudah diputuskan.
+
+| ID | Pertanyaan | Catatan |
+|---|---|---|
+| OQ-01 | Apakah satu Amil dapat memiliki lebih dari satu employment aktif? | Menentukan constraint employment. |
+| OQ-02 | Apakah assignment wajib terkait dengan employment aktif? | Kolom employment pada assignment direncanakan nullable. |
+| OQ-03 | Apakah assignment dapat dibuat untuk tanggal mulai di masa depan? | Berpengaruh pada status dan validasi aktif. |
+| OQ-04 | Siapa yang berwenang menyetujui assignment baru atau perubahan primary? | Menentukan approval workflow. |
+| OQ-05 | Apakah assignment memiliki status pending/approved selain active dan ended? | Menentukan lifecycle assignment. |
+| OQ-06 | Apakah LOCAL scope tetap hanya City dan Outlet? | Mengikuti rancangan access scope awal. |
+| OQ-07 | Apakah satu user dapat memiliki role yang sama pada beberapa unit organisasi? | Menentukan unique constraint user_roles. |
+| OQ-08 | Apakah data alamat harus menggunakan foreign key ke master geography? | Menentukan normalisasi alamat. |
+| OQ-09 | Apakah export audit trail memerlukan Excel dan PDF sejak versi pertama? | Menentukan prioritas UI/API. |
+| OQ-10 | Apakah perubahan assignment membutuhkan alasan wajib? | Berpengaruh pada audit dan validasi. |
+| OQ-11 | Apakah posisi tertentu hanya boleh digunakan pada level organisasi tertentu? | Memerlukan aturan eligibility position. |
+| OQ-12 | Apakah membership dapat dinonaktifkan sementara tanpa mengakhiri membership? | Menentukan lifecycle membership. |
+
+Jika salah satu keputusan diperlukan untuk melanjutkan phase, Agent harus mengajukan pertanyaan yang spesifik dan tidak menebak.
+
+---
+
+# 18. Definition of Done
+
+Sebuah phase dinyatakan selesai hanya jika:
+
+- Implementasi sesuai PRD.
+- Business rules diterapkan pada backend.
+- Authorization telah diuji.
+- Automated tests tersedia dan lulus.
+- Migration dapat dijalankan pada database pengujian.
+- Tidak ada perubahan destructive yang tidak disetujui.
+- Dokumentasi teknis diperbarui.
+- Hasil pekerjaan dilaporkan dengan format yang ditentukan.
+
+Project dinyatakan siap untuk tahap integrasi apabila seluruh phase inti selesai, test kritis lulus, dan tidak ada temuan keamanan berisiko tinggi yang belum ditangani.
+
+---
+
+**End of PRD — WahdahInspirasiZakat-Sulsel HRIS & Organization Management**

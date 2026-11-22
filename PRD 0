@@ -1,0 +1,523 @@
+# PRODUCT REQUIREMENTS DOCUMENT (PRD)
+
+## Sistem Manajemen Organisasi, Keanggotaan, dan Hak Akses Wilayah
+
+**Produk:** Wahdah Inspirasi Zakat  
+**Versi Dokumen:** 1.0  
+**Status:** Draft – Technical Specification  
+**Platform:** Web Application / REST API  
+**Framework:** Laravel 11/12  
+**Database:** MySQL 8
+
+---
+
+## 1. Latar Belakang
+
+Aplikasi Wahdah Inspirasi Zakat membutuhkan sistem pengelolaan pengguna yang mampu menangani struktur organisasi bertingkat, keanggotaan, dan hak akses terhadap data berdasarkan wilayah operasional.
+
+Sistem harus mendukung pengguna yang:
+- Tidak terikat pada organisasi mana pun.
+- Menjadi anggota organisasi tingkat negara.
+- Menjadi anggota organisasi tingkat provinsi.
+- Menjadi anggota organisasi tingkat kota/kabupaten.
+- Menjadi anggota organisasi tingkat gerai.
+- Memiliki beberapa keanggotaan sekaligus.
+- Memiliki cakupan akses data yang berbeda dari organisasi tempatnya menjadi anggota.
+
+Sistem juga harus memastikan bahwa setiap transaksi yang diinput mempunyai identitas organisasi pencatat.
+
+## 2. Tujuan Produk
+
+1. Mengelola struktur organisasi secara hierarkis.
+2. Mengelola anggota pada masing-masing organisasi.
+3. Memberikan hak akses data berdasarkan cakupan wilayah.
+4. Memberikan hak akses fitur berdasarkan role dan permission.
+5. Mengidentifikasi organisasi asal setiap data transaksi.
+6. Memudahkan pembuatan laporan berdasarkan negara, provinsi, kota, dan gerai.
+7. Memastikan keamanan dan konsistensi data antarwilayah.
+
+## 3. Ruang Lingkup
+
+### In Scope
+
+- Master negara.
+- Master provinsi.
+- Master kota/kabupaten.
+- Master gerai.
+- Master organisasi.
+- Hierarki organisasi.
+- Manajemen anggota organisasi.
+- Manajemen jabatan.
+- Manajemen access level.
+- Manajemen data scope user.
+- Manajemen role dan permission.
+- Pencatatan organisasi asal transaksi.
+- Filtering data berdasarkan wilayah.
+- Laporan anggota berdasarkan organisasi.
+
+### Out of Scope untuk tahap pertama
+
+- Integrasi SSO.
+- Sinkronisasi otomatis dengan sistem kepegawaian eksternal.
+- Multi-tenant database terpisah.
+- Workflow persetujuan transaksi bertingkat.
+- Integrasi peta geografis.
+
+## 4. Aktor Sistem
+
+| Aktor | Deskripsi |
+|---|---|
+| Super Admin | Mengelola seluruh konfigurasi sistem |
+| Admin Negara | Mengelola organisasi dan data dalam negara |
+| Admin Provinsi | Mengelola organisasi dan data dalam provinsi |
+| Admin Kota | Mengelola organisasi dan data dalam kota |
+| Admin Gerai | Mengelola aktivitas operasional gerai |
+| Staff | Menginput dan mengelola data sesuai permission |
+| User Non-Organisasi | Pengguna tanpa keanggotaan organisasi |
+
+## 5. Business Rules
+
+### BR-001: Hierarki Organisasi
+
+Struktur organisasi terdiri dari:
+
+Country → Province → City → Outlet.
+
+Setiap organisasi memiliki satu parent, kecuali organisasi tingkat negara.
+
+### BR-002: Independent Membership
+
+Keanggotaan tidak diwariskan secara otomatis.
+
+Contoh:
+
+User A merupakan anggota Gerai Makassar 01.
+
+User A tidak otomatis tercatat sebagai anggota Kota Makassar, Provinsi Sulawesi Selatan, atau Negara Indonesia.
+
+### BR-003: Multiple Membership
+
+Satu user dapat mempunyai beberapa keanggotaan organisasi.
+
+Contoh:
+
+User A:
+- Anggota organisasi Provinsi Sulawesi Selatan.
+- Anggota Gerai Makassar 01.
+- Anggota Gerai Makassar 02.
+
+### BR-004: User Without Membership
+
+User tetap dapat terdaftar di aplikasi meskipun tidak memiliki organisasi.
+
+Namun, user tersebut tidak dapat membuat transaksi organisasi sebelum diberikan organisasi pencatat yang sah.
+
+### BR-005: Access Level
+
+Tingkatan hak akses:
+
+| Level | Cakupan |
+|---|---|
+| 1 | Seluruh organisasi |
+| 2 | Negara tertentu |
+| 3 | Provinsi tertentu |
+| 4 | Kota atau gerai tertentu |
+
+Semakin kecil angka, semakin tinggi cakupan akses.
+
+### BR-006: Multiple Access
+
+Satu user dapat memiliki beberapa record hak akses.
+
+Cakupan akses digabungkan menggunakan metode UNION.
+
+Contoh:
+
+User A:
+- Level 3: Sulawesi Selatan.
+- Level 4: Gerai Baubau.
+
+User A dapat melihat seluruh data Sulawesi Selatan ditambah data Gerai Baubau.
+
+Jika terdapat Level 1, akses tersebut mencakup seluruh wilayah sehingga akses lainnya tidak memperluas cakupan lagi.
+
+### BR-007: Transaction Ownership
+
+Setiap transaksi harus mempunyai:
+- Organization Unit ID.
+- Created By.
+- Created At.
+
+Organization Unit ID menunjukkan organisasi tempat transaksi dicatat, bukan organisasi tempat user menjadi anggota secara otomatis.
+
+### BR-008: Data Immutability
+
+Ketika user berpindah organisasi, transaksi lama tidak boleh berpindah organisasi secara otomatis.
+
+### BR-009: Access Validation
+
+Semua pemeriksaan akses wajib dilakukan di backend.
+
+Frontend tidak boleh menjadi satu-satunya lapisan pengamanan data.
+
+### BR-010: Permission Separation
+
+Akses wilayah dan hak akses fitur merupakan dua hal berbeda.
+
+Contoh:
+- User mempunyai akses seluruh Indonesia.
+- User hanya boleh melihat laporan.
+- User tidak boleh menginput atau menghapus transaksi.
+
+---
+
+## 6. Functional Requirements
+
+### FR-001: Manajemen Wilayah
+
+Administrator dapat:
+- Menambah negara.
+- Mengubah data negara.
+- Menambah provinsi.
+- Menambah kota/kabupaten.
+- Menambah gerai.
+- Mengaktifkan dan menonaktifkan wilayah.
+
+Validasi:
+- Provinsi harus mempunyai negara.
+- Kota harus mempunyai provinsi.
+- Gerai harus mempunyai kota.
+- Wilayah yang masih digunakan tidak boleh dihapus sembarangan.
+
+### FR-002: Manajemen Organisasi
+
+Administrator dapat:
+- Membuat organisasi.
+- Menentukan jenis organisasi.
+- Menentukan parent organisasi.
+- Mengubah informasi organisasi.
+- Mengaktifkan dan menonaktifkan organisasi.
+- Melihat struktur organisasi.
+- Melihat seluruh organisasi turunannya.
+
+### FR-003: Manajemen Membership
+
+Administrator dapat:
+- Menambahkan user sebagai anggota.
+- Memindahkan user ke organisasi lain.
+- Menambahkan beberapa organisasi kepada user.
+- Menentukan organisasi utama.
+- Menentukan jabatan.
+- Menonaktifkan keanggotaan.
+- Melihat daftar anggota organisasi.
+
+Aturan:
+- Satu user maksimal mempunyai satu primary membership yang aktif.
+- Satu user boleh memiliki beberapa membership non-primary.
+- Membership tidak otomatis mengikuti perubahan parent.
+- Riwayat keanggotaan harus dapat ditelusuri.
+
+### FR-004: Manajemen Access Control
+
+Administrator dapat:
+- Memberikan All Access.
+- Memberikan Country Access.
+- Memberikan Province Access.
+- Memberikan City Access.
+- Memberikan Outlet Access.
+- Menambah beberapa akses kepada satu user.
+- Menonaktifkan akses.
+- Mengatur masa berlaku akses.
+
+Validasi cakupan:
+
+| Level | Organisasi yang diperbolehkan |
+|---|---|
+| 1 | Tidak membutuhkan organization_id |
+| 2 | Organization bertipe country |
+| 3 | Organization bertipe province |
+| 4 | Organization bertipe city atau outlet |
+
+### FR-005: Manajemen Role
+
+Administrator dapat membuat role seperti:
+- Super Admin.
+- Admin Nasional.
+- Admin Provinsi.
+- Admin Kota.
+- Admin Gerai.
+- Finance.
+- Staff Penghimpunan.
+- Staff Penyaluran.
+
+Role dapat diberikan pada tingkat global atau organisasi tertentu.
+
+### FR-006: Manajemen Permission
+
+Permission minimal terdiri dari:
+
+| Permission | Keterangan |
+|---|---|
+| view | Melihat data |
+| create | Membuat data |
+| update | Mengubah data |
+| delete | Menghapus data |
+| approve | Menyetujui data |
+| export | Mengekspor data |
+| manage | Mengelola konfigurasi |
+
+Permission harus menggunakan kode unik.
+
+Contoh:
+
+- donations.view
+- donations.create
+- donations.update
+- donations.delete
+- donations.approve
+- donations.export
+- members.view
+- members.create
+- members.update
+- members.delete
+- reports.view
+- reports.export
+
+### FR-007: Transaction Organization Context
+
+Saat user melakukan input transaksi:
+
+1. Backend mengambil identitas user.
+2. Backend mengambil membership aktif.
+3. Sistem menentukan organisasi pencatat yang tersedia.
+4. User memilih organisasi pencatat jika memiliki beberapa pilihan.
+5. Backend memvalidasi organisasi terhadap membership atau penugasan operasional yang sah.
+6. Backend memastikan user memiliki permission create.
+7. Backend menyimpan organization_unit_id.
+8. Backend menyimpan created_by.
+9. Data langsung masuk dalam cakupan organisasi tersebut.
+
+User tidak boleh mengirim organization_unit_id sembarangan tanpa validasi.
+
+### FR-008: Data Filtering
+
+Setiap permintaan data wajib melalui pemeriksaan access scope.
+
+Filter berdasarkan:
+- All Access.
+- Country.
+- Province.
+- City.
+- Outlet.
+
+Jika user memiliki beberapa scope, seluruh hasil yang diizinkan digabungkan tanpa duplikasi.
+
+### FR-009: Dashboard
+
+Dashboard menampilkan data berdasarkan hak akses user.
+
+Contoh:
+- Super Admin: seluruh Indonesia.
+- Admin Negara: seluruh provinsi dan gerai dalam negara.
+- Admin Provinsi: seluruh kota dan gerai dalam provinsi.
+- Admin Gerai: data gerai yang diberikan.
+
+### FR-010: Reporting
+
+Sistem menyediakan laporan:
+- Jumlah anggota per negara.
+- Jumlah anggota per provinsi.
+- Jumlah anggota per kota.
+- Jumlah anggota per gerai.
+- Jumlah transaksi per organisasi.
+- Jumlah transaksi berdasarkan wilayah.
+- Aktivitas user berdasarkan organisasi.
+
+Laporan keanggotaan dapat menyediakan dua jenis hitungan:
+1. Anggota langsung: user yang terdaftar langsung pada organisasi.
+2. Anggota turunan: anggota organisasi di bawah organisasi tersebut.
+
+Kedua hitungan harus dibedakan dan tidak boleh dijumlahkan sebagai anggota unik tanpa deduplikasi.
+
+---
+
+## 7. Acceptance Criteria
+
+| ID | Kriteria | Hasil yang diharapkan |
+|---|---|---|
+| AC-001 | User tanpa membership login | Berhasil login |
+| AC-002 | User memiliki 2 membership | Kedua membership tampil |
+| AC-003 | User level 2 | Melihat seluruh data negara terkait |
+| AC-004 | User level 3 | Melihat seluruh data provinsi terkait |
+| AC-005 | User level 4 city | Melihat data kota terkait |
+| AC-006 | User level 4 outlet | Melihat data gerai terkait |
+| AC-007 | User mempunyai beberapa scope | Data scope digabungkan |
+| AC-008 | User pindah organisasi | Transaksi lama tetap pada organisasi asal |
+| AC-009 | User menginput transaksi | Organisasi pencatat tervalidasi |
+| AC-010 | User tidak mempunyai permission create | Input ditolak |
+| AC-011 | User mengakses wilayah tanpa izin | Request ditolak |
+| AC-012 | Organisasi dinonaktifkan | Tidak dapat dipakai untuk transaksi baru |
+
+---
+
+## 8. API Specification
+
+API menggunakan REST dengan JSON:API sebagai referensi format.
+
+Contoh endpoint:
+
+### Organization
+
+GET `/api/v1/organizations`
+
+GET `/api/v1/organizations/{id}`
+
+POST `/api/v1/organizations`
+
+PATCH `/api/v1/organizations/{id}`
+
+GET `/api/v1/organizations/{id}/members`
+
+### Membership
+
+GET `/api/v1/users/{id}/memberships`
+
+POST `/api/v1/users/{id}/memberships`
+
+DELETE `/api/v1/users/{id}/memberships/{membershipId}`
+
+### User Access
+
+GET `/api/v1/users/{id}/accesses`
+
+POST `/api/v1/users/{id}/accesses`
+
+DELETE `/api/v1/users/{id}/accesses/{accessId}`
+
+### Transactions
+
+GET `/api/v1/donations`
+
+POST `/api/v1/donations`
+
+GET `/api/v1/donations/{id}`
+
+PATCH `/api/v1/donations/{id}`
+
+### JSON:API Response Example
+
+```json
+{
+  "data": {
+    "type": "donations",
+    "id": "1001",
+    "attributes": {
+      "transaction_number": "INV-001",
+      "donor_name": "Ahmad",
+      "amount": "1000000.00"
+    },
+    "relationships": {
+      "organization": {
+        "data": {
+          "type": "organization-units",
+          "id": "4"
+        }
+      }
+    }
+  }
+}
+```
+
+---
+
+## 9. Non-Functional Requirements
+
+### Security
+- Seluruh API wajib menggunakan authentication.
+- Data scope diperiksa di backend.
+- User tidak boleh menaikkan hak akses sendiri.
+- Pemberian hak akses harus tercatat.
+- Perubahan organisasi harus tercatat.
+- Gunakan database transaction untuk operasi penting.
+- Terapkan validasi terhadap mass assignment.
+
+### Performance
+- Gunakan index pada foreign key.
+- Gunakan closure table untuk pencarian organisasi turunan.
+- Hindari N+1 query.
+- Terapkan pagination pada daftar anggota dan transaksi.
+- Terapkan caching untuk konfigurasi akses dengan invalidasi saat hak akses berubah.
+
+### Maintainability
+- Gunakan Laravel Service Layer.
+- Gunakan Policy/Gate untuk permission.
+- Gunakan Form Request untuk validasi.
+- Gunakan API Resource untuk response.
+- Gunakan Seeder untuk master konfigurasi.
+- Gunakan automated tests untuk seluruh aturan akses.
+
+---
+
+## 10. Business Process
+
+### User Login
+1. User login.
+2. Sistem memverifikasi identitas.
+3. Sistem mengambil membership aktif.
+4. Sistem mengambil access scope aktif.
+5. Sistem mengambil role dan permission.
+6. Sistem membangun konteks akses user.
+7. Dashboard menampilkan data yang diizinkan.
+
+### Input Transaction
+1. User membuka modul transaksi.
+2. Sistem menampilkan organisasi pencatat yang diizinkan.
+3. User memilih organisasi pencatat.
+4. User mengisi transaksi.
+5. Backend memvalidasi permission.
+6. Backend memvalidasi membership atau penugasan.
+7. Backend menyimpan transaksi.
+8. Sistem mengembalikan response JSON:API.
+
+### View Transaction
+1. User meminta daftar transaksi.
+2. Sistem mengambil access scope.
+3. Sistem mencari organisasi yang masuk dalam scope.
+4. Sistem melakukan filtering transaksi.
+5. Sistem memeriksa permission view.
+6. Sistem mengembalikan hasil.
+
+---
+
+## 11. Development Roadmap
+
+| Tahap | Pekerjaan |
+|---|---|
+| Phase 1 | Master wilayah |
+| Phase 2 | Organization hierarchy |
+| Phase 3 | Membership management |
+| Phase 4 | Access level management |
+| Phase 5 | Role & permission |
+| Phase 6 | Transaction organization context |
+| Phase 7 | Data filtering engine |
+| Phase 8 | Dashboard & reporting |
+| Phase 9 | Security testing |
+| Phase 10 | Production deployment |
+
+## 12. Definition of Done
+
+Sistem dianggap memenuhi kebutuhan tahap pertama apabila:
+
+- Seluruh master wilayah dapat dikelola.
+- Organisasi dapat dibuat secara hierarkis.
+- User dapat memiliki banyak membership.
+- User dapat tidak memiliki membership.
+- User dapat memiliki beberapa access scope.
+- Hak akses wilayah bekerja sesuai level.
+- Hak akses fitur bekerja secara independen.
+- Transaksi menyimpan organisasi pencatat.
+- Data tidak dapat diakses lintas wilayah tanpa izin.
+- Laporan anggota dan transaksi sesuai cakupan akses.
+- Seluruh aturan utama mempunyai automated test.
+
+**Dokumen ini menjadi acuan implementasi modul Organization Management dan Access Control Wahdah Inspirasi Zakat.**
